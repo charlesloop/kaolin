@@ -16,6 +16,8 @@
 
 #include "../../check.h"
 
+#include <iostream>
+
 #ifdef WITH_CUDA
 #include "../../spc_math.h"
 #endif
@@ -38,14 +40,16 @@ ulong GetStorageBytes(void* d_temp_storage, uint* d_Info, uint* d_PrefixSum, uin
 void Conv3d_forward_cuda(
     point_data*  d_Proot,
     uchar*     dO,
+    uchar*     dE,
     uint*     dP,
-    float*     Input, int N,
-    float*     Output, int M,
-    float*     Params,
+    float*     Inputs, int Cin,
+    float*     Outputs, int Cout,
+    float*      Weights,
+    float*      Transposed_Weights,
     point_data* Kvec, uint Ksize,
     int     Jump,
-    int     Qlevel,
-    int     Olevel,
+    int     InLevel,
+    int     OctreeLevel,
     int     BatchSize,
     uint*    Pyramid,
     uint*    d_Info,
@@ -55,20 +59,27 @@ void Conv3d_forward_cuda(
     int*    d_Inmap,
     int*    d_Outmap,
     int*    d_InmapX,
-    int*    d_OutmapX);
+    int*    d_OutmapX,
+    float*      d_EmptyIndicator,
+    float*      d_UnseenIndicator,
+    float*      d_qcincout,
+    uint        outsize);
 
 void Conv3d_backward_cuda(
     point_data*  d_Proot,
     uchar*     dO,
+    uchar*     dE,
     uint*     dP,
-    float*     Input, int N,
+    float*     Inputs, int Cin,
     float*     Grad_Inputs,
-    float*     Grad_Outputs, int M,
-    float*     Params, float* Grad_Params,
+    float*     Grad_Outputs, int Cout,
+    float*      Weights,
+    float*      Transposed_Weights,
+    float* Grad_Weights,
     point_data* Kvec, uint Ksize,
     int     Jump,
-    int     Plevel,
-    int     Olevel,
+    int     OutLevel,
+    int     OctreeLevel,
     int     BatchSize,
     uint*    Pyramid,
     uint*    d_Info,
@@ -78,19 +89,27 @@ void Conv3d_backward_cuda(
     int*    d_Inmap,
     int*    d_Outmap,
     int*    d_InmapX,
-    int*    d_OutmapX);
+    int*    d_OutmapX,
+    float*      d_EmptyIndicator,
+    float*      d_UnseenIndicator,
+    float*      d_qcincout,
+    float*      d_qkcout,
+    uint        insize,
+    uint        outsize);
 
 void ConvTranspose3d_forward_cuda(
     point_data*  d_Proot,
     uchar*     dO,
+    uchar*     dE,
     uint*     dP,
-    float*     Input, int N,
-    float*     Output, int M,
-    float*     Params,
+    float*     Inputs, int Cin,
+    float*     Outputs, int Cout,
+    float*      Weights,
+    float*      Transposed_Weights,
     point_data* Kvec, uint Ksize,
     int     Jump,
-    int     Qlevel,
-    int     Olevel,
+    int     InLevel,
+    int     OctreeLevel,
     int     BatchSize,
     uint*    Pyramid,
     uint*    d_Info,
@@ -100,20 +119,27 @@ void ConvTranspose3d_forward_cuda(
     int*    d_Inmap,
     int*    d_Outmap,
     int*    d_InmapX,
-    int*    d_OutmapX);
+    int*    d_OutmapX,
+    float*      d_EmptyIndicator,
+    float*      d_UnseenIndicator,
+    float*      d_qcincout,
+    uint        outsize);
 
 void ConvTranspose3d_backward_cuda(
     point_data*  d_Proot,
     uchar*     dO,
+    uchar*     dE,
     uint*     dP,
-    float*     Input, int N,
+    float*     Inputs, int Cin,
     float*     Grad_Inputs,
-    float*     Grad_Outputs, int M,
-    float*     Params, float* Grad_Params,
+    float*     Grad_Outputs, int Cout,
+    float*      Weights,
+    float*      Transposed_Weights,
+    float* Grad_Weights,
     point_data* Kvec, uint Ksize,
     int     Jump,
-    int     Plevel,
-    int     Olevel,
+    int     OutLevel,
+    int     OctreeLevel,
     int     BatchSize,
     uint*    Pyramid,
     uint*    d_Info,
@@ -123,11 +149,17 @@ void ConvTranspose3d_backward_cuda(
     int*    d_Inmap,
     int*    d_Outmap,
     int*    d_InmapX,
-    int*    d_OutmapX);
+    int*    d_OutmapX,
+    float*      d_EmptyIndicator,
+    float*      d_UnseenIndicator,
+    float*      d_qcincout,
+    float*      d_qkcout,
+    uint        insize,
+    uint        outsize);
 
 #endif
 
-std::tuple<at::Tensor, int> Conv3d_forward(
+std::tuple<at::Tensor, int> Conv3d_forward_empty(
     at::Tensor octree,
     at::Tensor points,
     uint level,
@@ -136,7 +168,8 @@ std::tuple<at::Tensor, int> Conv3d_forward(
     at::Tensor inputs,
     at::Tensor params,
     at::Tensor kernel_vectors,
-    uint jump) {
+    uint jump,
+    at::Tensor empty) {
 #ifdef WITH_CUDA
   CHECK_OCTREES(octree);
   CHECK_INPUT(inputs);
@@ -147,44 +180,55 @@ std::tuple<at::Tensor, int> Conv3d_forward(
   CHECK_CUDA(points);
   CHECK_CPU(pyramid);
   CHECK_CUDA(kernel_vectors);
+  CHECK_CUDA(empty);
+
+  TORCH_CHECK(octree.size(0) == empty.size(0), "octree/empty size mismatch");
 
   uint kernel_vectors_size = params.size(0);
-  assert(kernel_vectors_size == kernel_vectors.size(0));
+  TORCH_CHECK(kernel_vectors_size == kernel_vectors.size(0));
   point_data* Kvec = (point_data*)kernel_vectors.data_ptr<short>();
 
-  uint N = params.size(1);
-  assert(N == inputs.size(1));
+  uint Cin = params.size(1);
+  TORCH_CHECK(Cin == inputs.size(1), "Wrong input channel size.");
 
-  uint M = params.size(2);
+  uint Cout = params.size(2);
 
   int BatchSize = pyramid.size(0);
   uint* Pyramid = reinterpret_cast<uint*>(pyramid.data_ptr<int>());
 
-  int Qlevel = level;
-  int Plevel = Qlevel - jump;
-  int Olevel = pyramid.size(2)-2;
-  assert(PLevel >= 0);
+  int InLevel = level;
+  int OutLevel = InLevel - jump;
+  int OctreeLevel = pyramid.size(2)-2;
+  TORCH_CHECK(OutLevel >= 0, "Illegal jump input, resulting in level underflow");
 
-  uint psize = pyramid.index({ Slice(None), 0, Plevel }).sum().item<int>();
-  int pmax = pyramid.index({ Slice(None), 0, Plevel }).max().item<int>();
+  uint insize = pyramid.index({ Slice(None), 0, InLevel }).sum().item<int>();
+  uint outsize = pyramid.index({ Slice(None), 0, OutLevel }).sum().item<int>();
+  int outmax = pyramid.index({ Slice(None), 0, OutLevel }).max().item<int>();
+  TORCH_CHECK(inputs.size(0) == insize+2, "Bad input size.")
 
-  at::Tensor outputs = at::zeros({ psize, M}, octree.options().dtype(at::kFloat));
+  at::Tensor outputs = at::zeros({ outsize + 2, Cout }, octree.options().dtype(at::kFloat)); // add 2 for empty/unseen
 
-  float* Params = params.data_ptr<float>();
-  float*   Y = outputs.data_ptr<float>();
-  float*   X = inputs.data_ptr<float>();
+  auto transpose_weights = params.transpose(1,2);
+  float* Weights = params.data_ptr<float>();
+  float* Transpose_Weights = transpose_weights.data_ptr<float>();
+
+  float*   Outputs = outputs.data_ptr<float>();
+  float*   Inputs = inputs.data_ptr<float>();
 
   //intermediate storage
-  int scan_size = kernel_vectors_size * pmax;
+  int scan_size = kernel_vectors_size * outmax;
 
   // allocate local GPU storage
-  at::Tensor Info = at::zeros({ scan_size },
-                              octree.options().dtype(at::kInt));
+  at::Tensor Info = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor PrefixSum = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor Imap = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
-  at::Tensor Omap = at::zeros({ pmax }, octree.options().dtype(at::kInt));
+  at::Tensor Omap = at::zeros({ outmax }, octree.options().dtype(at::kInt));
   at::Tensor ImapX = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor OmapX = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
+
+  at::Tensor Etmp = at::zeros({ scan_size }, octree.options().dtype(at::kFloat));
+  at::Tensor Utmp = at::zeros({ scan_size }, octree.options().dtype(at::kFloat));
+  at::Tensor QCinCout = at::zeros({ outmax *  Cout * Cin }, octree.options().dtype(at::kFloat));
 
   // get tensor data pointers
   uint*  d_Info = reinterpret_cast<uint*>(Info.data_ptr<int>());
@@ -192,8 +236,7 @@ std::tuple<at::Tensor, int> Conv3d_forward(
 
   void* d_temp_storage = NULL;
   ulong temp_storage_bytes = GetStorageBytes(d_temp_storage, d_Info, d_PrefixSum, scan_size);
-  at::Tensor temp_storage = at::zeros({ (long)temp_storage_bytes },
-                                      octree.options());
+  at::Tensor temp_storage = at::zeros({ (long)temp_storage_bytes }, octree.options());
   d_temp_storage = (void*)temp_storage.data_ptr<uchar>();
 
   int* inmap = Imap.data_ptr<int>();
@@ -204,11 +247,18 @@ std::tuple<at::Tensor, int> Conv3d_forward(
   point_data* d_Proot = reinterpret_cast<point_data*>(points.data_ptr<short>());
   uchar* dO = octree.data_ptr<uchar>();
   uint* dEx = reinterpret_cast<uint*>(exsum.data_ptr<int>());
+  uchar* dE = empty.data_ptr<uchar>();
+
+  float* d_empty = Etmp.data_ptr<float>();
+  float* d_useen = Utmp.data_ptr<float>();
+  float* d_qcincout = QCinCout.data_ptr<float>();
 
   Conv3d_forward_cuda(
-    d_Proot, dO, dEx,
-    X, N, Y, M, Params, Kvec, kernel_vectors_size, jump,
-    Qlevel, Olevel, BatchSize, Pyramid,
+    d_Proot, dO, dE, dEx,
+    Inputs, Cin, Outputs, Cout, 
+    Weights, Transpose_Weights,
+    Kvec, kernel_vectors_size, jump,
+    InLevel, OctreeLevel, BatchSize, Pyramid,
     d_Info,
     d_PrefixSum,
     d_temp_storage,
@@ -216,16 +266,47 @@ std::tuple<at::Tensor, int> Conv3d_forward(
     inmap,
     outmap,
     inmapX,
-    outmapX);
+    outmapX,
+    d_empty,
+    d_useen,
+    d_qcincout,
+    insize);
 
-  return std::tuple<at::Tensor, int>{outputs, Plevel};
+  //map E/U imputs to outputs
+  auto W = params.sum(0);
+  auto in = inputs.index({ Slice(insize, insize+2) , Slice(None) });
+  auto out = at::mm(in, W);
+
+  // for (int i = 0; i < in.size(0); i++)
+  // {
+  //   for (int j = 0; j < in.size(1); j++)
+  //   {
+  //     printf("%f ", in[i][j].item<float>());
+  //   }
+  // }
+  // printf("\n");
+
+  // for (int i = 0; i < out.size(0); i++)
+  // {
+  //   for (int j = 0; j < out.size(1); j++)
+  //   {
+  //     printf("%f ", out[i][j].item<float>());
+  //   }
+  // }
+  // printf("\n");
+
+  //copy out -> end of outputs
+  outputs.index({Slice(-2, None)}) = out;
+  // outputs.index({Slice(-2, None)}) = 1.0f;//at::full((2,Cout), 0.1);
+
+  return std::tuple<at::Tensor, int>{outputs, OutLevel};
 #else
   AT_ERROR("Conv3d_forward not built with CUDA");
 #endif
 }
 
 
-std::vector<at::Tensor> Conv3d_backward(
+std::vector<at::Tensor> Conv3d_backward_empty(
     at::Tensor octree,
     at::Tensor points,
     uint level,
@@ -235,7 +316,8 @@ std::vector<at::Tensor> Conv3d_backward(
     at::Tensor grad_outputs,
     at::Tensor params,
     at::Tensor kernel_vectors,
-    uint jump) {
+    uint jump,
+    at::Tensor empty) {
 #ifdef WITH_CUDA
   CHECK_INPUT(grad_outputs);
   CHECK_INPUT(inputs);
@@ -247,44 +329,62 @@ std::vector<at::Tensor> Conv3d_backward(
   CHECK_CPU(pyramid);
   CHECK_CUDA(kernel_vectors);
 
+
   uint kernel_vectors_size = params.size(0);
-  assert(kernel_vectors_size == kernel_vectors.size(0));
+  TORCH_CHECK(kernel_vectors_size == kernel_vectors.size(0));
   point_data* Kvec = (point_data*)kernel_vectors.data_ptr<short>();
 
-  uint N = params.size(1);
-  assert(N == inputs.size(1));
+  uint Cin = params.size(1);
+  TORCH_CHECK(Cin == inputs.size(1));
 
-  uint M = params.size(2);
+  uint Cout = params.size(2);
 
   int BatchSize = pyramid.size(0);
-  int Olevel = pyramid.size(2)-2;
   uint* Pyramid = reinterpret_cast<uint*>(pyramid.data_ptr<int>());
 
-  int Plevel = level;
-  int Qlevel = Plevel + jump;
+  int OutLevel = level;
+  int InLevel = OutLevel + jump;
+  int OctreeLevel = pyramid.size(2)-2;
+
+  uint outsize = pyramid.index({ Slice(None), 0, OutLevel }).sum().item<int>();
+  uint insize = pyramid.index({ Slice(None), 0, InLevel }).sum().item<int>();
+  // int outmax = pyramid.index({ Slice(None), 0, OutLevel }).max().item<int>();
+  int inmax = pyramid.index({ Slice(None), 0, InLevel }).max().item<int>();
+
+
+
+  // printf("cnvbk: %d  %d  %d   %d %d    %d\n", level, Cin, Cout, insize, outsize, inmax);
+
+
 
   at::Tensor grad_inputs = at::zeros_like(inputs);
   at::Tensor grad_params = at::zeros_like(params);
 
-  float* Params = params.data_ptr<float>();
-  float* grad_Params = grad_params.data_ptr<float>();
+  float* Weights = params.data_ptr<float>();
+  auto transpose_weights = params.transpose(1,2);
+  float* Transpose_Weights = transpose_weights.data_ptr<float>();
 
+  float* grad_Weights = grad_params.data_ptr<float>();
   float* Grad_Outputs = grad_outputs.data_ptr<float>();
   float* Grad_Inputs = grad_inputs.data_ptr<float>();
-  float* X = inputs.data_ptr<float>();
+  float* Inputs = inputs.data_ptr<float>();
 
-  int pmax = pyramid.index({ Slice(None), 0, Qlevel }).max().item<int>();
 
   //intermediate storage
-  int scan_size = kernel_vectors_size * pmax;
+  int scan_size = kernel_vectors_size * inmax;
 
   // allocate local GPU storage
   at::Tensor Info = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor PrefixSum = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor Imap = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
-  at::Tensor Omap = at::zeros({ pmax }, octree.options().dtype(at::kInt));
+  at::Tensor Omap = at::zeros({ inmax }, octree.options().dtype(at::kInt));
   at::Tensor ImapX = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor OmapX = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
+
+  at::Tensor Etmp = at::zeros({ kernel_vectors_size * inmax }, octree.options().dtype(at::kFloat));
+  at::Tensor Utmp = at::zeros({ kernel_vectors_size * inmax }, octree.options().dtype(at::kFloat));
+  at::Tensor QCinCout = at::zeros({ inmax *  Cout * Cin }, octree.options().dtype(at::kFloat));
+  at::Tensor KCout = at::zeros({ kernel_vectors_size * Cout }, octree.options().dtype(at::kFloat));
 
   // get tensor data pointers
   uint*  d_Info = reinterpret_cast<uint*>(Info.data_ptr<int>());
@@ -303,11 +403,19 @@ std::vector<at::Tensor> Conv3d_backward(
   point_data*  d_Proot = (point_data*)points.data_ptr<short>();
   uchar*     dO = octree.data_ptr<uchar>();
   uint*     dEx = reinterpret_cast<uint*>(exsum.data_ptr<int>());
+  uchar* dE = empty.data_ptr<uchar>();
+  
+  float* d_empty = Etmp.data_ptr<float>();
+  float* d_useen = Utmp.data_ptr<float>();
+  float* d_qcincout = QCinCout.data_ptr<float>();
+  float* d_kcout = KCout.data_ptr<float>();
 
   Conv3d_backward_cuda(
-    d_Proot, dO, dEx,
-    X, N, Grad_Inputs, Grad_Outputs, M, Params, grad_Params, Kvec, kernel_vectors_size, jump,
-    Plevel, Olevel, BatchSize, Pyramid,
+    d_Proot, dO, dE, dEx,
+    Inputs, Cin, Grad_Inputs, Grad_Outputs, Cout, 
+    Weights, Transpose_Weights, grad_Weights, 
+    Kvec, kernel_vectors_size, jump,
+    OutLevel, OctreeLevel, BatchSize, Pyramid,
     d_Info,
     d_PrefixSum,
     d_temp_storage,
@@ -315,7 +423,27 @@ std::vector<at::Tensor> Conv3d_backward(
     inmap,
     outmap,
     inmapX,
-    outmapX);
+    outmapX,
+    d_empty,
+    d_useen,
+    d_qcincout,
+    d_kcout,
+    insize,
+    outsize);
+
+  //map E/U imputs to outputs
+  auto W = transpose_weights.sum(0).div_(powf32(8.0, jump));
+  auto in = grad_outputs.index({ Slice(outsize, outsize+2) , Slice(None) });
+  auto out = at::mm(in , W);
+
+  // std::cout << "Q" << InLevel << "  P" << OutLevel << "\n";
+  // std::cout << in;
+  // std::cout << out;
+
+  //copy out -> end of outputs
+  grad_inputs.index({Slice(-2, None)}) = out;
+  // grad_inputs.index({Slice(-2, None)}) = 1.0f;//at::full((2,Cin), 0.1);
+
 
   return {grad_inputs, grad_params};
 #else
@@ -323,7 +451,7 @@ std::vector<at::Tensor> Conv3d_backward(
 #endif
 }
 
-std::tuple<at::Tensor, int> ConvTranspose3d_forward(
+std::tuple<at::Tensor, int> ConvTranspose3d_forward_empty(
     at::Tensor octree,
     at::Tensor points,
     uint level,
@@ -332,7 +460,8 @@ std::tuple<at::Tensor, int> ConvTranspose3d_forward(
     at::Tensor inputs,
     at::Tensor params,
     at::Tensor kernel_vectors,
-    uint jump) {
+    uint jump,
+    at::Tensor empty) {
 #if WITH_CUDA
   CHECK_OCTREES(octree);
   CHECK_INPUT(inputs);
@@ -344,43 +473,53 @@ std::tuple<at::Tensor, int> ConvTranspose3d_forward(
   CHECK_CPU(pyramid);
   CHECK_CUDA(kernel_vectors);
 
+  TORCH_CHECK(octree.size(0) == empty.size(0), "octree/empty size mismatch");
+
   uint kernel_vectors_size = params.size(0);
-  assert(kernel_vectors_size == kernel_vectors.size(0));
+  TORCH_CHECK(kernel_vectors_size == kernel_vectors.size(0));
   point_data* Kvec = (point_data*)kernel_vectors.data_ptr<short>();
 
-  uint N = params.size(1);
-  assert(N == inputs.size(1));
+  uint Cin = params.size(1);
+  TORCH_CHECK(Cin == inputs.size(1));
 
-  uint M = params.size(2);
+  uint Cout = params.size(2);
 
-  // int jump = jump[0].item<int>();
   int BatchSize = pyramid.size(0);
   uint* Pyramid = reinterpret_cast<uint*>(pyramid.data_ptr<int>());
 
-  int Qlevel = level;
-  int Plevel = Qlevel + jump;
-  int Olevel = pyramid.size(2)-2;
-  assert(PLevel <= Olevel);
+  int InLevel = level;
+  int OutLevel = InLevel + jump;
+  int OctreeLevel = pyramid.size(2)-2;
+  TORCH_CHECK(OutLevel <= OctreeLevel, "Illegal jump input, resulting in level overflow");
 
-  uint psize = pyramid.index({ Slice(None), 0, Plevel }).sum().item<int>();
-  int pmax = pyramid.index({ Slice(None), 0, Plevel }).max().item<int>();
+  uint insize = pyramid.index({ Slice(None), 0, InLevel }).sum().item<int>();
+  uint outsize = pyramid.index({ Slice(None), 0, OutLevel }).sum().item<int>();
+  int outmax = pyramid.index({ Slice(None), 0, OutLevel }).max().item<int>();
+  TORCH_CHECK(inputs.size(0) == insize+2, "Bad input size.")
 
-  at::Tensor outputs = at::zeros({ psize, M}, octree.options().dtype(at::kFloat));
+  at::Tensor outputs = at::zeros({ outsize + 2, Cout }, octree.options().dtype(at::kFloat)); // add 2 for empty/unseen
 
-  float* Params = params.data_ptr<float>();
-  float*   Y = outputs.data_ptr<float>();
-  float*   X = inputs.data_ptr<float>();
+  auto transpose_weights = params.transpose(1,2);
+  float* Weights = params.data_ptr<float>();
+  float* Transpose_Weights = transpose_weights.data_ptr<float>();
+
+  float*   Outputs = outputs.data_ptr<float>();
+  float*   Inputs = inputs.data_ptr<float>();
 
   //intermediate storage
-  int scan_size = kernel_vectors_size * pmax;
+  int scan_size = kernel_vectors_size * outmax;
 
   // allocate local GPU storage
   at::Tensor Info = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor PrefixSum = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor Imap = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
-  at::Tensor Omap = at::zeros({ pmax }, octree.options().dtype(at::kInt));
+  at::Tensor Omap = at::zeros({ outmax }, octree.options().dtype(at::kInt));
   at::Tensor ImapX = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor OmapX = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
+
+  at::Tensor Etmp = at::zeros({ scan_size }, octree.options().dtype(at::kFloat));
+  at::Tensor Utmp = at::zeros({ scan_size }, octree.options().dtype(at::kFloat));
+  at::Tensor QCinCout = at::zeros({ outmax *  Cout * Cin }, octree.options().dtype(at::kFloat));
 
   // get tensor data pointers
   uint*  d_Info = reinterpret_cast<uint*>(Info.data_ptr<int>());
@@ -399,11 +538,18 @@ std::tuple<at::Tensor, int> ConvTranspose3d_forward(
   point_data*  d_Proot = (point_data*)points.data_ptr<short>();
   uchar*     dO = octree.data_ptr<uchar>();
   uint*     dEx = reinterpret_cast<uint*>(exsum.data_ptr<int>());
+  uchar* dE = empty.data_ptr<uchar>();
+
+  float* d_empty = Etmp.data_ptr<float>();
+  float* d_useen = Utmp.data_ptr<float>();
+  float* d_qcincout = QCinCout.data_ptr<float>();
 
   ConvTranspose3d_forward_cuda(
-    d_Proot, dO, dEx,
-    X, N, Y, M, Params, Kvec, kernel_vectors_size, jump,
-    Qlevel, Olevel, BatchSize, Pyramid,
+    d_Proot, dO, dE, dEx,
+    Inputs, Cin, Outputs, Cout, 
+    Weights, Transpose_Weights,
+    Kvec, kernel_vectors_size, jump,
+    InLevel, OctreeLevel, BatchSize, Pyramid,
     d_Info,
     d_PrefixSum,
     d_temp_storage,
@@ -411,15 +557,28 @@ std::tuple<at::Tensor, int> ConvTranspose3d_forward(
     inmap,
     outmap,
     inmapX,
-    outmapX);
+    outmapX,
+    d_empty,
+    d_useen,
+    d_qcincout,
+    insize);
 
-  return {outputs, Plevel};
+  //map E/U imputs to outputs
+  auto W = params.sum(0).div_(powf32(8.0, jump));
+  auto in = inputs.index({ Slice(insize, insize+2) , Slice(None) });
+  auto out = at::mm(in, W);
+
+  // //copy out -> end of outputs
+  outputs.index({Slice(-2, None)}) = out;
+  // outputs.index({Slice(-2, None)}) = 1.0f;//at::full((2,Cout), 0.1);
+
+  return std::tuple<at::Tensor, int>{outputs, OutLevel};
 #else
   AT_ERROR("ConvTranspose3d_forward not built with CUDA");
 #endif
 }
 
-std::vector<at::Tensor>  ConvTranspose3d_backward(
+std::vector<at::Tensor>  ConvTranspose3d_backward_empty(
     at::Tensor octree,
     at::Tensor points,
     uint level,
@@ -429,7 +588,8 @@ std::vector<at::Tensor>  ConvTranspose3d_backward(
     at::Tensor grad_outputs,
     at::Tensor params,
     at::Tensor kernel_vectors,
-    uint jump) {
+    uint jump,
+    at::Tensor empty) {
 #if WITH_CUDA
   CHECK_OCTREES(octree);
   CHECK_INPUT(grad_outputs);
@@ -443,42 +603,53 @@ std::vector<at::Tensor>  ConvTranspose3d_backward(
   CHECK_CUDA(kernel_vectors);
 
   uint kernel_vectors_size = params.size(0);
-  assert(kernel_vectors_size == kernel_vectors.size(0));
+  TORCH_CHECK(kernel_vectors_size == kernel_vectors.size(0));
   point_data* Kvec = (point_data*)kernel_vectors.data_ptr<short>();
 
-  uint N = params.size(1);
-  assert(N == inputs.size(1));
+  uint Cin = params.size(1);
+  TORCH_CHECK(Cin == inputs.size(1));
 
-  uint M = params.size(2);
+  uint Cout = params.size(2);
+
   int BatchSize = pyramid.size(0);
-  int Olevel = pyramid.size(2)-2;
   uint* Pyramid = reinterpret_cast<uint*>(pyramid.data_ptr<int>());
 
-  int Plevel = level;
-  int Qlevel = Plevel - jump;
+  int OutLevel = level;
+  int InLevel = OutLevel - jump;
+  int OctreeLevel = pyramid.size(2)-2;
+
+  uint outsize = pyramid.index({ Slice(None), 0, OutLevel }).sum().item<int>();
+  uint insize = pyramid.index({ Slice(None), 0, InLevel }).sum().item<int>();
+  int outmax = pyramid.index({ Slice(None), 0, OutLevel }).max().item<int>();
 
   at::Tensor grad_inputs = at::zeros_like(inputs);
   at::Tensor grad_params = at::zeros_like(params);
 
-  float* Params = params.data_ptr<float>();
-  float* grad_Params = grad_params.data_ptr<float>();
+  float* Weights = params.data_ptr<float>();
+  auto transpose_weights = params.transpose(1,2);
+  float* Transpose_Weights = transpose_weights.data_ptr<float>();
 
+  float* grad_Weights = grad_params.data_ptr<float>();
   float* Grad_Outputs = grad_outputs.data_ptr<float>();
   float* Grad_Inputs = grad_inputs.data_ptr<float>();
-  float* X = inputs.data_ptr<float>();
+  float* Inputs = inputs.data_ptr<float>();
 
-  int pmax = pyramid.index({ Slice(None), 0, Qlevel }).max().item<int>();
 
   //intermediate storage
-  int scan_size = kernel_vectors_size * pmax;
+  int scan_size = kernel_vectors_size * outmax;
 
   // allocate local GPU storage
   at::Tensor Info = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor PrefixSum = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor Imap = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
-  at::Tensor Omap = at::zeros({ pmax }, octree.options().dtype(at::kInt));
+  at::Tensor Omap = at::zeros({ outmax }, octree.options().dtype(at::kInt));
   at::Tensor ImapX = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
   at::Tensor OmapX = at::zeros({ scan_size }, octree.options().dtype(at::kInt));
+
+  at::Tensor Etmp = at::zeros({ kernel_vectors_size * outmax }, octree.options().dtype(at::kFloat));
+  at::Tensor Utmp = at::zeros({ kernel_vectors_size * outmax }, octree.options().dtype(at::kFloat));
+  at::Tensor QCinCout = at::zeros({ outmax *  Cout * Cin }, octree.options().dtype(at::kFloat));
+  at::Tensor KCout = at::zeros({ kernel_vectors_size * Cout }, octree.options().dtype(at::kFloat));
 
   // get tensor data pointers
   uint*  d_Info = reinterpret_cast<uint*>(Info.data_ptr<int>());
@@ -497,11 +668,19 @@ std::vector<at::Tensor>  ConvTranspose3d_backward(
   point_data*  d_Proot = (point_data*)points.data_ptr<short>();
   uchar*     dO = octree.data_ptr<uchar>();
   uint*     dEx = reinterpret_cast<uint*>(exsum.data_ptr<int>());
+  uchar* dE = empty.data_ptr<uchar>();
+
+  float* d_empty = Etmp.data_ptr<float>();
+  float* d_useen = Utmp.data_ptr<float>();
+  float* d_qcincout = QCinCout.data_ptr<float>();
+  float* d_kcout = KCout.data_ptr<float>();
 
   ConvTranspose3d_backward_cuda(
-    d_Proot, dO, dEx,
-    X, N, Grad_Inputs, Grad_Outputs, M, Params, grad_Params, Kvec, kernel_vectors_size, jump,
-    Plevel, Olevel, BatchSize, Pyramid,
+    d_Proot, dO, dE, dEx,
+    Inputs, Cin, Grad_Inputs, Grad_Outputs, Cout, 
+    Weights, Transpose_Weights, grad_Weights, 
+    Kvec, kernel_vectors_size, jump,
+    OutLevel, OctreeLevel, BatchSize, Pyramid,
     d_Info,
     d_PrefixSum,
     d_temp_storage,
@@ -509,7 +688,22 @@ std::vector<at::Tensor>  ConvTranspose3d_backward(
     inmap,
     outmap,
     inmapX,
-    outmapX);
+    outmapX,
+    d_empty,
+    d_useen,
+    d_qcincout,
+    d_kcout,
+    insize,
+    outsize);
+
+  //map E/U imputs to outputs
+  auto W = transpose_weights.sum(0);//.div_(powf32(8.0, jump));
+  auto in = grad_outputs.index({ Slice(outsize, outsize+2) , Slice(None) });
+  auto out = at::mm(in, W);
+ 
+  //copy out -> end of outputs
+  grad_inputs.index({Slice(-2, None)}) = out;
+  // grad_inputs.index({Slice(-2, None)}) = 1.0f;//at::full((2,Cin), 0.1);
 
   return {grad_inputs, grad_params};
 #else

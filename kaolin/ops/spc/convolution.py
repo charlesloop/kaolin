@@ -15,6 +15,7 @@
 
 import math
 from torch import nn
+from torch._C import EnumType
 from torch.autograd import Function
 import torch
 
@@ -31,7 +32,7 @@ __all__ = [
 class Conv3dFunction(Function):
     @staticmethod
     def forward(ctx, octrees, point_hierarchies, level, pyramids, exsum,
-                inputs, params, kernel_vectors, jump):
+                inputs, params, kernel_vectors, jump, empties):
         octrees = octrees.contiguous()
         point_hierarchies = point_hierarchies.contiguous()
         pyramids = pyramids.contiguous()
@@ -40,13 +41,29 @@ class Conv3dFunction(Function):
         params = params.contiguous()
         kernel_vectors = kernel_vectors.contiguous()
 
-        ctx.save_for_backward(octrees, point_hierarchies, pyramids, exsum,
-                              inputs, params, kernel_vectors)
         ctx.jump = jump  # jump is an int, not a tensor
 
-        outputs, level = _C.ops.spc.Conv3d_forward(
-            octrees, point_hierarchies, level, pyramids, exsum,
-            inputs, params, kernel_vectors, jump)
+        outputs = None
+
+        if empties is not None:
+            empties.contiguous()
+            ctx.empty = True
+            ctx.save_for_backward(octrees, point_hierarchies, pyramids, exsum,
+                                inputs, params, kernel_vectors, empties)
+
+            outputs, level = _C.ops.spc.Conv3d_forward_empty(
+                octrees, point_hierarchies, level, pyramids, exsum,
+                inputs, params, kernel_vectors, jump, empties)
+
+        else:
+            ctx.empty = False
+            ctx.save_for_backward(octrees, point_hierarchies, pyramids, exsum,
+                                inputs, params, kernel_vectors)
+
+            outputs, level = _C.ops.spc.Conv3d_forward(
+                octrees, point_hierarchies, level, pyramids, exsum,
+                inputs, params, kernel_vectors, jump)
+
         ctx.level = level
 
         level = torch.tensor([level])
@@ -57,16 +74,25 @@ class Conv3dFunction(Function):
     def backward(ctx, grad_outputs, grad_level):
         grad_outputs = grad_outputs.contiguous()
 
-        octrees, point_hierarchies, pyramids, exsum, inputs, params, kernel_vectors = ctx.saved_tensors
+        # octrees, point_hierarchies, pyramids, exsum, inputs, params, kernel_vectors, empties = ctx.saved_tensors
 
-        d_inputs, d_params = _C.ops.spc.Conv3d_backward(
-            octrees, point_hierarchies, ctx.level, pyramids, exsum, inputs,
-            grad_outputs, params, kernel_vectors, ctx.jump)
+        d_inputs, d_params = None, None
 
-        return None, None, None, None, None, d_inputs, d_params, None, None
+        if ctx.empty:
+            octrees, point_hierarchies, pyramids, exsum, inputs, params, kernel_vectors, empties = ctx.saved_tensors
+            d_inputs, d_params = _C.ops.spc.Conv3d_backward_empty(
+                        octrees, point_hierarchies, ctx.level, pyramids, exsum, inputs,
+                        grad_outputs, params, kernel_vectors, ctx.jump, empties)
+        else:
+            octrees, point_hierarchies, pyramids, exsum, inputs, params, kernel_vectors = ctx.saved_tensors
+            d_inputs, d_params = _C.ops.spc.Conv3d_backward(
+                        octrees, point_hierarchies, ctx.level, pyramids, exsum, inputs,
+                        grad_outputs, params, kernel_vectors, ctx.jump)
+
+        return None, None, None, None, None, d_inputs, d_params, None, None, None
 
 def conv3d(octrees, point_hierarchies, level, pyramids, exsum, input,
-           weight, kernel_vectors, jump=0, bias=None, **kwargs):
+           weight, kernel_vectors, jump=0, bias=None, empties=None, **kwargs):
     r"""Convolution over a structured point cloud. The inputs :math:`X` are mapped
     to outputs :math:`Y` by the following:
 
@@ -130,7 +156,7 @@ def conv3d(octrees, point_hierarchies, level, pyramids, exsum, input,
     else:
         outputs, level = Conv3dFunction.apply(octrees, point_hierarchies, level,
                                               pyramids, exsum, input, weight,
-                                              kernel_vectors, jump)
+                                              kernel_vectors, jump, empties)
     if bias is not None:
         outputs += bias.unsqueeze(0)
 
@@ -194,7 +220,7 @@ class Conv3d(nn.Module):
         if self.bias is not None:
             self.bias.data.uniform_(-stdv, stdv)
 
-    def forward(self, octrees, point_hierarchies, level, pyramids, exsum, input, **kwargs):
+    def forward(self, octrees, point_hierarchies, level, pyramids, exsum, input, empties=None, **kwargs):
         r"""
         Args:
             octrees (torch.ByteTensor):
@@ -238,7 +264,7 @@ class Conv3d(nn.Module):
                             f"{list(remaining_kwargs)[0]}")
 
         return conv3d(octrees, point_hierarchies, level, pyramids, exsum, input,
-                      self.weight, self.kernel_vectors, self.jump, self.bias)
+                      self.weight, self.kernel_vectors, self.jump, self.bias, empties)
 
     def __repr__(self):
         s = '(in={}, out={}, kernel_vector_size={})'.format(
@@ -249,7 +275,7 @@ class Conv3d(nn.Module):
 class ConvTranspose3dFunction(Function):
     @staticmethod
     def forward(ctx, octrees, point_hierarchies, level, pyramids, exsum,
-                inputs, params, kernel_vectors, jump):
+                inputs, params, kernel_vectors, jump, empties):
         octrees = octrees.contiguous()
         point_hierarchies = point_hierarchies.contiguous()
         pyramids = pyramids.contiguous()
@@ -258,13 +284,29 @@ class ConvTranspose3dFunction(Function):
         params = params.contiguous()
         kernel_vectors = kernel_vectors.contiguous()
 
-        ctx.save_for_backward(octrees, point_hierarchies, pyramids, exsum, inputs,
-                              params, kernel_vectors)
-        ctx.jump = jump
+        ctx.jump = jump  # jump is an int, not a tensor
 
-        outputs, level = _C.ops.spc.ConvTranspose3d_forward(octrees, point_hierarchies,
+        outputs = None
+
+        if empties is not None:
+            empties.contiguous()
+            ctx.empty = True
+            ctx.save_for_backward(octrees, point_hierarchies, pyramids, exsum,
+                                inputs, params, kernel_vectors, empties)
+
+            outputs, level = _C.ops.spc.ConvTranspose3d_forward_empty(octrees, point_hierarchies,
                                                             level, pyramids, exsum,
-                                                            inputs, params, kernel_vectors, jump)
+                                                            inputs, params, kernel_vectors, jump, empties)
+
+        else:
+            ctx.empty = False
+            ctx.save_for_backward(octrees, point_hierarchies, pyramids, exsum, inputs,
+                                params, kernel_vectors)
+
+            outputs, level = _C.ops.spc.ConvTranspose3d_forward(octrees, point_hierarchies,
+                                                                level, pyramids, exsum,
+                                                                inputs, params, kernel_vectors, jump)
+
         ctx.level = level
 
         level = torch.tensor([level])
@@ -275,17 +317,25 @@ class ConvTranspose3dFunction(Function):
     def backward(ctx, grad_outputs, grad_level):
         grad_outputs = grad_outputs.contiguous()
 
-        octrees, point_hierarchies, pyramids, exsum, inputs, params, kernel_vectors = \
-            ctx.saved_tensors
+        # octrees, point_hierarchies, pyramids, exsum, inputs, params, kernel_vectors, empties = ctx.saved_tensors
 
-        d_inputs, d_params = _C.ops.spc.ConvTranspose3d_backward(
-            octrees, point_hierarchies, ctx.level, pyramids, exsum, inputs,
-            grad_outputs, params, kernel_vectors, ctx.jump)
+        d_inputs, d_params = None, None
 
-        return None, None, None, None, None, d_inputs, d_params, None, None
+        if ctx.empty:
+            octrees, point_hierarchies, pyramids, exsum, inputs, params, kernel_vectors, empties = ctx.saved_tensors
+            d_inputs, d_params = _C.ops.spc.ConvTranspose3d_backward_empty(
+                        octrees, point_hierarchies, ctx.level, pyramids, exsum, inputs,
+                        grad_outputs, params, kernel_vectors, ctx.jump, empties)
+        else:
+            octrees, point_hierarchies, pyramids, exsum, inputs, params, kernel_vectors = ctx.saved_tensors
+            d_inputs, d_params = _C.ops.spc.ConvTranspose3d_backward(
+                        octrees, point_hierarchies, ctx.level, pyramids, exsum, inputs,
+                        grad_outputs, params, kernel_vectors, ctx.jump)
+
+        return None, None, None, None, None, d_inputs, d_params, None, None, None
 
 def conv_transpose3d(octrees, point_hierarchies, level, pyramids, exsum,
-                     input, weight, kernel_vectors, jump=0, bias=None, **kwargs):
+                     input, weight, kernel_vectors, jump=0, bias=None, empties=None, **kwargs):
     r"""Transposed convolution over a structured point cloud. The inputs :math:`X` are mapped
     to outputs :math:`Y` by the following:
 
@@ -350,7 +400,7 @@ def conv_transpose3d(octrees, point_hierarchies, level, pyramids, exsum,
         outputs = input.mm(weight.squeeze(0))
     else:
         outputs, level = ConvTranspose3dFunction.apply(octrees, point_hierarchies, level, pyramids,
-                                                       exsum, input, weight, kernel_vectors, jump)
+                                                       exsum, input, weight, kernel_vectors, jump, empties)
     if bias is not None:
         outputs += bias.unsqueeze(0)
 
@@ -413,7 +463,7 @@ class ConvTranspose3d(nn.Module):
         if self.bias is not None:
             self.bias.data.uniform_(-stdv, stdv)
 
-    def forward(self, octrees, point_hierarchies, level, pyramids, exsum, input, **kwargs):
+    def forward(self, octrees, point_hierarchies, level, pyramids, exsum, input, empties=None, **kwargs):
         r"""
         Args:
             octrees (torch.ByteTensor):
@@ -456,7 +506,7 @@ class ConvTranspose3d(nn.Module):
             raise TypeError("ConvTranspose3d got an unexpected keyword argument "
                             f"{list(remaining_kwargs)[0]}")
         return conv_transpose3d(octrees, point_hierarchies, level, pyramids, exsum, input,
-                                self.weight, self.kernel_vectors, self.jump, self.bias)
+                                self.weight, self.kernel_vectors, self.jump, self.bias, empties)
 
     def __repr__(self):
         s = '(in={}, out={}, kernel_vector_size={})'.format(

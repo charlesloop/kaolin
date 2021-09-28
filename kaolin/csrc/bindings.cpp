@@ -29,6 +29,7 @@
 #include "./ops/spc/spc_query.h"
 #include "./ops/spc/spc_utils.h"
 
+#include "./ops/spc/classify_space.h"
 
 namespace kaolin {
 
@@ -58,8 +59,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     ops_spc.def("Conv3d_backward", &Conv3d_backward);
     ops_spc.def("ConvTranspose3d_forward", &ConvTranspose3d_forward);
     ops_spc.def("ConvTranspose3d_backward", &ConvTranspose3d_backward);
+
+
+    ops_spc.def("Conv3d_forward_empty", &Conv3d_forward_empty);
+    ops_spc.def("Conv3d_backward_empty", &Conv3d_backward_empty);
+    ops_spc.def("ConvTranspose3d_forward_empty", &ConvTranspose3d_forward_empty);
+    ops_spc.def("ConvTranspose3d_backward_empty", &ConvTranspose3d_backward_empty);
+
+
     ops_spc.def("to_dense_forward", &to_dense_forward);
     ops_spc.def("to_dense_backward", &to_dense_backward);
+    ops_spc.def("slice_image", &slice_image);
+    ops_spc.def("classify_space", &classify_space);
   py::module metrics = m.def_submodule("metrics");
   metrics.def("sided_distance_forward_cuda", &sided_distance_forward_cuda);
   metrics.def("sided_distance_backward_cuda", &sided_distance_backward_cuda);

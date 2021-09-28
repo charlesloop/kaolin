@@ -24,7 +24,7 @@ from ..ops.batch import list_to_packed
 class Spc(object):
     """Class containing all the Structured point clouds information"""
 
-    KEYS = {'octrees', 'lengths', 'max_level', 'pyramids', 'exsum', 'point_hierarchies'}
+    KEYS = {'octrees', 'lengths', 'max_level', 'pyramids', 'exsum', 'point_hierarchies', 'empties'}
 
     def __init__(self, octrees, lengths, max_level=None, pyramids=None,
                  exsum=None, point_hierarchies=None):

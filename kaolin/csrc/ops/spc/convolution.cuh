@@ -22,6 +22,8 @@
 
 #include <cublas_v2.h>
 
+#include <ATen/cuda/CUDAContext.h>
+
 constexpr int MAX_GRID = 65535;
 
 template <typename Itype> struct pVector {

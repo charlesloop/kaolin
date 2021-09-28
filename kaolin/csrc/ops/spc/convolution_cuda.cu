@@ -55,13 +55,8 @@ uint GetPyramid(uint* Pyramid, int batch, int k, int level, int olevel) {
   return Pyramid[(2 * batch + k) * (olevel + 2) + level];
 }
 
-ulong GetStorageBytesX(void* d_temp_storage, uint* d_Info,
-                       uint* d_PrefixSum, uint max_total_points) {
-  ulong temp_storage_bytes = 0;
-  CubDebugExit(DeviceScan::InclusiveSum(
-      d_temp_storage, temp_storage_bytes, d_Info, d_PrefixSum, max_total_points));
-  return temp_storage_bytes;
-}
+ulong GetStorageBytes(void* d_temp_storage, uint* d_Info,
+                       uint* d_PrefixSum, uint max_total_points);
 
 __device__ int Identify(
     const point_data   k,
@@ -212,6 +207,9 @@ void ProcessKernelMaps(
     cudaMemcpy(&currSum, PSum + (k + 1)*Cnt - 1, sizeof(int),
                cudaMemcpyDeviceToHost);
 
+    // printf("k: %d  %d   %d\n", k, (k + 1)*Cnt - 1, K*Cnt);
+    // CUDA_CHECK(cudaGetLastError());
+
     size = currSum - prevSum;
     in_map.push_back(pVector<int>(Ix, size));
     out_map.push_back(pVector<int>(Ox, size));
@@ -244,7 +242,6 @@ void Conv3d_forward_cuda(
     int*    d_Outmap,
     int*    d_InmapX,
     int*    d_OutmapX) {
-
   pInOutMaps<int32_t>     d_inmap;
   pInOutMaps<int32_t>     d_outmap;
 

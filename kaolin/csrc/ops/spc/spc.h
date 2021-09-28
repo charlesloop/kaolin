@@ -78,6 +78,58 @@ std::vector<at::Tensor> ConvTranspose3d_backward(
     at::Tensor kernel_vectors,
     uint jump);
 
+
+
+std::tuple<at::Tensor, int> Conv3d_forward_empty(
+    at::Tensor octree,
+    at::Tensor points,
+    uint level,
+    at::Tensor pyramid,
+    at::Tensor exsum,
+    at::Tensor inputs,
+    at::Tensor params,
+    at::Tensor kernel_vectors,
+    uint jump,
+    at::Tensor empties);
+
+std::vector<at::Tensor> Conv3d_backward_empty(
+    at::Tensor octree,
+    at::Tensor points,
+    uint level,
+    at::Tensor pyramid,
+    at::Tensor exsum,
+    at::Tensor inputs,
+    at::Tensor grad_outputs,
+    at::Tensor params,
+    at::Tensor kernel_vectors,
+    uint jump,
+    at::Tensor empties);
+
+std::tuple<at::Tensor, int> ConvTranspose3d_forward_empty(
+    at::Tensor octree,
+    at::Tensor points,
+    uint level,
+    at::Tensor pyramid,
+    at::Tensor exsum,
+    at::Tensor inputs,
+    at::Tensor params,
+    at::Tensor kernel_vectors,
+    uint jump,
+    at::Tensor empties);
+
+std::vector<at::Tensor> ConvTranspose3d_backward_empty(
+    at::Tensor octree,
+    at::Tensor points,
+    uint level,
+    at::Tensor pyramid,
+    at::Tensor exsum,
+    at::Tensor inputs,
+    at::Tensor grad_outputs,
+    at::Tensor params,
+    at::Tensor kernel_vectors,
+    uint jump,
+    at::Tensor empties);
+
 }  // namespace kaolin
 
 #endif  // KAOLIN_OPS_SPC_SPC_H_
