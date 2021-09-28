@@ -30,7 +30,7 @@ namespace kaolin {
 
 using namespace cub;
 
-__global__ void NodesToMortonX(
+__global__ void NodesToMorton(
     const uint Psize,
     const uchar* Odata,
     const uint* PrefixSum,
@@ -50,7 +50,7 @@ __global__ void NodesToMortonX(
   }
 }
 
-__global__ void MortonToPointX(
+__global__ void MortonToPoint(
     const uint Psize,
     morton_code* Mdata,
     point_data* Pdata) {
@@ -92,7 +92,7 @@ void generate_points_cuda_kernel_launch(
     l = 0;
     while (l < level) {
       int Lsize = Pmid[l++];
-      NodesToMortonX<<<(Lsize + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK,
+      NodesToMorton<<<(Lsize + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK,
                        THREADS_PER_BLOCK>>>(Lsize, O, S, M, M0);
       O += Lsize;
       S += Lsize;
@@ -101,7 +101,7 @@ void generate_points_cuda_kernel_launch(
 
     uint totalPoints = PmidSum[l + 1];
 
-    MortonToPointX<<<(totalPoints + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK,
+    MortonToPoint<<<(totalPoints + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK,
                      THREADS_PER_BLOCK>>>(totalPoints, M0, P0);
     CUDA_CHECK(cudaGetLastError());
 

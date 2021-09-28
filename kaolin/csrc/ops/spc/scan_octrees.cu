@@ -30,7 +30,7 @@ namespace kaolin {
 
 using namespace cub;
 
-__global__ void d_ScanNodesX(
+__global__ void d_ScanNodes(
     const uint numBytes,
     const uint8_t *d_octree,
     uint *octrees_ptr) {
@@ -79,7 +79,7 @@ int scan_octrees_cuda_kernel_launcher(
     uint  osize = lengths[batch].item<int>();
 
     // compute exclusive sum 1 element beyond end of list to get inclusive sum starting at prefix_sum_ptr+1
-    d_ScanNodesX<<< (osize + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK >>>(
+    d_ScanNodes<<< (osize + (THREADS_PER_BLOCK - 1)) / THREADS_PER_BLOCK, THREADS_PER_BLOCK >>>(
         osize, O0, num_childrens_per_node_ptr);
     CubDebugExit(DeviceScan::ExclusiveSum(
         d_temp_storage, temp_storage_bytes, num_childrens_per_node_ptr,
