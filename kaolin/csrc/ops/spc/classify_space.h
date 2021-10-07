@@ -18,6 +18,8 @@
 
 #include <ATen/ATen.h>
 
+
+
 namespace kaolin {
 
 at::Tensor classify_space(
@@ -38,6 +40,20 @@ at::Tensor slice_image(
     uint axes,
     uint val);
 
+
+
+at::Tensor imagestack_to_morton(
+    at::Tensor imagestack,
+    at::Tensor offsets);
+
+at::Tensor build_mip3d(at::Tensor volumedata);
+
+at::Tensor decide(at::Tensor Points, at::Tensor miplevels, uint level, uint val);
+at::Tensor inclusive_sum(at::Tensor Inputs);
+at::Tensor compactify(at::Tensor Points, at::Tensor Exsum);
+at::Tensor subdivide(at::Tensor Points, at::Tensor Exsum);
+at::Tensor contains(at::Tensor Points, uint level, float t);
+at::Tensor custom_normals(at::Tensor Points, uint level, float t);
 
 }  // namespace kaolin
 

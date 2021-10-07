@@ -24,12 +24,12 @@
 #include <cub/device/device_radix_sort.cuh>
 
 #include "../../spc_math.h"
+#include "../../utils.h"
 
 namespace kaolin {
 
 using namespace cub;
 using namespace std;
-
 
 
 /////////// empty-unseen //////////////////////////
@@ -334,6 +334,383 @@ void SliceImage(uchar* octree, uchar* empty, uint level, uint* sum, uint offset,
 }
 
 
+
+#define NUM_CHUNK 1536 //32*48
+#define CHUNK 2097152 // 128^3
+#define IMSIZE 25165824 // 4096 * 6144
+
+__global__ void d_ImageMorton (
+    const uint num, const uchar* image, uint bx, uint by, uchar* morder)
+{
+  uint tidx = blockDim.x * blockIdx.x + threadIdx.x;
+
+  if (tidx < num)
+  {
+    point_data p = ToPoint((morton_code)tidx);
+
+    uchar val = 0;
+    if (p.z < 120)
+    {
+      uint imidx = p.z*IMSIZE + (p.y+by)*6144 + p.x+bx;
+      val = image[imidx];
+    }
+
+    morder[tidx] = val;
+  }
+}
+
+
+void ImageStackToMorton_cuda(
+  uchar* is, 
+  uint depth, 
+  uint height, 
+  uint width, 
+  uchar* mo,
+  int* T)
+{
+  uchar* chunk = mo;
+  for (int k = 0; k < 1536; k++)
+  {
+    morton_code m = T[k];
+    point_data p = ToPoint(m);
+
+
+    printf("%d   %d %d   %ld\n", k, p.x, p.y, m);
+
+
+    d_ImageMorton <<< (CHUNK + 1023)/1024, 1024 >>>
+    (
+      CHUNK,
+      is, 
+      128*p.x,
+      128*p.y,
+      chunk);
+
+    chunk += CHUNK;
+
+    CUDA_CHECK(cudaGetLastError());
+
+  }
+
+
+  printf("done with cuda\n");
+
+
+
+}
+
+
+
+
+__global__ void d_FinalMip (
+    const uint num, const uchar* morder, uchar2* mip)
+{
+  uint tidx = blockDim.x * blockIdx.x + threadIdx.x;
+
+  if (tidx < num)
+  {
+    uint midx = 8*tidx;
+    uchar2 minmax = make_uchar2(255, 0);
+
+    for (int i = 0; i < 8; i++)
+    {
+      uchar val = morder[midx + i];
+      if (val < minmax.x) minmax.x = val;
+      if (val > minmax.y) minmax.y = val;
+    }
+
+    mip[tidx] = minmax;
+  }
+}
+
+
+__global__ void d_MiddleMip (
+    const uint num, uchar2* mipin, uchar2* mipout)
+{
+  uint tidx = blockDim.x * blockIdx.x + threadIdx.x;
+
+  if (tidx < num)
+  {
+    uint midx = 8*tidx;
+    uchar2 minmax = make_uchar2(255, 0);
+
+    for (int i = 0; i < 8; i++)
+    {
+      uchar2 val = mipin[midx + i];
+      if (val.x < minmax.x) minmax.x = val.x;
+      if (val.y > minmax.y) minmax.y = val.y;
+    }
+
+    mipout[tidx] = minmax;    
+  }
+}
+
+
+
+void BuildMip3D_cuda(uchar* mortonorder, uchar2* miplevels)
+{
+  uchar2* level_ptrs[7];
+  uint64_t num_kernels[7];
+  level_ptrs[0] = miplevels;
+  num_kernels[0] = 1536;
+  for (int l = 0; l < 6; l++)
+  {
+    level_ptrs[l+1] = level_ptrs[l] + 1536*(0x1<<(3*l));
+    num_kernels[l+1] = 1536*(0x1<<(3*(l+1)));
+    // printf("%d   %d  %d\n", l+1, 0x1<<(3*l), num_kernels[l+1]);
+  }
+
+
+  printf("launching %ld kernels\n", num_kernels[6]);
+  d_FinalMip <<< (num_kernels[6] + 1023)/1024, 1024 >>> 
+  (
+    num_kernels[6],
+    mortonorder, 
+    level_ptrs[6]);
+
+  CUDA_CHECK(cudaGetLastError());
+
+  for (int l = 5; l >= 0; l--)
+  {
+    // printf("launching %ld kernels\n", num_kernels[l]);
+
+    d_MiddleMip <<< (num_kernels[l] + 1023)/1024, 1024 >>> 
+    (
+      num_kernels[l],
+      level_ptrs[l+1], 
+      level_ptrs[l]);
+
+    CUDA_CHECK(cudaGetLastError());
+
+  }
+
+}
+
+
+
+
+
+ulong GetTempSize(void* d_temp_storage, uint* d_M0, uint* d_M1, uint max_total_points)
+{
+    ulong    temp_storage_bytes = 0;
+    CubDebugExit(DeviceScan::InclusiveSum(d_temp_storage, temp_storage_bytes, d_M0, d_M1, max_total_points));
+    return temp_storage_bytes;
+}
+
+
+
+
+__global__ void d_Decide (
+    const uint num, point_data* points, uchar2* miplevels, uint val, uint* info)
+{
+  uint tidx = blockDim.x * blockIdx.x + threadIdx.x;
+
+  if (tidx < num)
+  {
+    morton_code m = ToMorton(points[tidx]);
+    uchar2 bounds = miplevels[m];
+
+    info[tidx] = bounds.y >= val-8 && bounds.x < val+8 ? 1 : 0;    
+  }
+}
+
+
+
+void Decide_cuda(uint num, point_data* points, uchar2* miplevels, uint val, uint* info)
+{
+
+  d_Decide <<< (num + 1023)/1024, 1024 >>> 
+  (
+    num,
+    points,
+    miplevels,
+    val,
+    info);
+
+  CUDA_CHECK(cudaGetLastError());
+
+
+}
+
+
+
+
+
+
+void InclusiveSum_cuda(uint num, uint* inputs, uint* outputs, void* d_temp_storage, ulong temp_storage_bytes)
+{
+  DeviceScan::InclusiveSum(d_temp_storage, temp_storage_bytes, inputs, outputs, num);
+  CUDA_CHECK(cudaGetLastError());
+}
+
+
+
+
+
+
+
+
+__global__ void d_Compactify(uint numVoxels, point_data* voxelDataIn, point_data* voxelDataOut, uint* InSum)
+{
+	uint tidx = blockDim.x * blockIdx.x + threadIdx.x;
+
+	if (tidx < numVoxels)
+	{
+    uint IdxOut = (tidx == 0u) ? 0 : InSum[tidx-1];
+		if (IdxOut != InSum[tidx])
+		{
+			voxelDataOut[IdxOut] = voxelDataIn[tidx];
+		}
+	}
+}
+
+
+void Compactify_cuda(uint num, point_data* points, uint* insum, point_data* new_points)
+{
+	if (num == 0u) return;
+
+	d_Compactify << <(num + 1023) / 1024, 1024 >> >(num, points, new_points, insum);
+
+
+}
+
+
+
+
+
+
+
+__global__ void d_Subdivide(uint numVoxels, point_data* voxelDataIn, point_data* voxelDataOut, uint* InSum)
+{
+	uint tidx = blockDim.x * blockIdx.x + threadIdx.x;
+
+	if (tidx < numVoxels)
+	{
+    uint IdxOut = (tidx == 0u) ? 0 : InSum[tidx-1];
+		if (IdxOut != InSum[tidx])
+		{
+			point_data Vin = voxelDataIn[tidx];
+			point_data Vout = make_point_data(2 * Vin.x, 2 * Vin.y, 2 * Vin.z);
+
+			uint IdxBase = 8 * IdxOut;
+
+			for (uint i = 0; i < 8; i++)
+			{
+				voxelDataOut[IdxBase + i] = make_point_data(Vout.x + (i >> 2), Vout.y + ((i >> 1) & 0x1), Vout.z + (i & 0x1));
+			}
+		}
+	}
+}
+
+
+
+void Subdivide_cuda(uint num, point_data* points, uint* exsum, point_data* new_points)
+{
+	if (num == 0u) return;
+
+	d_Subdivide << <(num + 1023) / 1024, 1024 >> >(num, points, new_points, exsum);
+
+
+}
+
+
+
+
+__device__ float F(float x, float y, float z, float t)
+{
+  // return x*x + y*y + z*z -1.0f;
+
+  return -1.0f/128.0f + (pow(x-t, 2) + y*y + z*z - 1.0f/64.0f)*(pow(x+t, 2) + y*y + z*z - 1.0f/64.0f);
+
+}
+
+
+
+__global__ void d_Contains(uint num, point_data* points, uint level, float t, uint* info)
+{
+	uint tidx = blockDim.x * blockIdx.x + threadIdx.x;
+
+	if (tidx < num)
+	{
+    point_data p = points[tidx];
+
+    float minval = 1.0f;
+    float maxval = -1.0f;
+
+    float invL = 1.0f/(0x1<<(level-1));
+
+    for (uint i = 0; i < 8; i++)
+    {
+      float x = invL*(p.x + (i >> 2)) - 1.0f;
+      float y = invL*(p.y + ((i >> 1)&0x1)) - 1.0f;
+      float z = invL*(p.z + (i & 0x1)) - 1.0f;
+      float val = F(x, y, z, t);
+      minval = fmin(minval, val);
+      maxval = fmax(maxval, val);
+    }
+
+    info[tidx] = minval < 0.0 && maxval > 0.0 ? 1 : 0;    
+	}
+}
+
+
+
+
+void Contains_cuda(uint num, point_data* points, uint level, float t, uint* info)
+{
+
+	if (num == 0u) return;
+
+	d_Contains << <(num + 1023) / 1024, 1024 >> >(num, points, level, t, info);
+
+
+}
+
+
+
+
+
+__device__ float3 DF(float x, float y, float z, float t)
+{
+  float a = 4.0f*(x*x + y*y + z*z);
+  float b = 4.0f*t*t;
+  float c = 1.0f/16.0f;
+
+  return make_float3(x*(a-b-c), y*(a+b-c), z*(a+b-c));
+
+}
+
+
+
+__global__ void d_CustomNormals(uint num, point_data* points, uint level, float t, float3* normals)
+{
+	uint tidx = blockDim.x * blockIdx.x + threadIdx.x;
+
+	if (tidx < num)
+	{
+    point_data p = points[tidx];
+
+    float invL = 1.0f/(0x1<<(level-1));
+
+    normals[tidx] = normalize(DF(invL*(p.x+0.5f) - 1.0f, invL*(p.y+0.5f) - 1.0f, invL*(p.z+0.5f) - 1.0f, t));
+
+	}
+}
+
+
+
+
+
+
+
+void CustomNormals_cuda(uint num, point_data* points, uint level, float t, float3* normals)
+{
+	if (num == 0u) return;
+
+	d_CustomNormals << <(num + 1023) / 1024, 1024 >> >(num, points, level, t, normals);
+
+
+}
 
 
 
