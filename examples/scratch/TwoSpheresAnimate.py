@@ -19,7 +19,7 @@ start_level = 6
 points = spc.morton_to_points(torch.arange(pow(8, start_level)).to(device))
 
 # t is the animation control parameter t \in [0,0.5] is a good range. 
-# t = 0.25*math.cos(time) # should work well w.r.t acceleration/deceleration
+# t = 0.25*(math.cos(time)+1.0) # should work well w.r.t acceleration/deceleration
 # 
 # t = 0.0
 t = 0.3125 
